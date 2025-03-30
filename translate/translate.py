@@ -39,6 +39,20 @@ class Translate(GoogleTranslateAPI, commands.Cog):
     __author__ = ["Aziz", "TrustyJAID"]
     __version__ = "2.6.0"
 
+    # Add the emoji_to_lang dictionary here, at the class level
+    emoji_to_lang = {
+        "🇦🇫": "ps", "🇦🇱": "sq", "🇩🇿": "ar", "🇦🇸": "en", "🇦🇩": "ca", "🇦🇴": "pt",
+        "🇦🇮": "en", "🇦🇷": "es", "🇦🇲": "hy", "🇦🇼": "nl", "🇦🇺": "en", "🇦🇹": "de",
+        "🇦🇿": "az", "🇧🇸": "en", "🇧🇭": "ar", "🇧🇩": "bn", "🇧🇧": "en", "🇧🇾": "be",
+        "🇧🇪": "nl", "🇧🇿": "en", "🇧🇯": "fr", "🇧🇲": "en", "🇧🇴": "es", "🇧🇦": "bs",
+        "🇧🇼": "en", "🇧🇷": "pt", "🇧🇳": "ms", "🇧🇬": "bg", "🇧🇫": "fr", "🇧🇮": "fr",
+        "🇰🇭": "km", "🇨🇲": "fr", "🇨🇦": "en", "🇨🇻": "pt", "🇨🇫": "fr", "🇹🇩": "fr",
+        "🇨🇱": "es", "🇨🇳": "zh-CN", "🇨🇩": "fr", "🇨🇷": "es", "🇭🇷": "hr", "🇨🇺": "es",
+        "🇨🇾": "el", "🇨🇿": "cs", "🇩🇰": "da", "🇩🇯": "fr", "🇩🇴": "es", "🇪🇨": "es",
+        "🇪🇬": "ar", "🇸🇻": "es", "🇪🇪": "et", "🇪🇹": "am", "🇫🇮": "fi", "🇫🇷": "fr",
+        "🇬🇦": "fr", "🇬🇲": "en", "🇬🇪": "ka", "🇩🇪": "de", "🇬🇭": "en", "🇬🇷": "el",
+    }
+
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, 156434873547, force_registration=True)
@@ -63,12 +77,55 @@ class Translate(GoogleTranslateAPI, commands.Cog):
             "guild_whitelist": {},
         }
         self._key: Optional[str] = None
-        self.translation_loop.start()
+        # Removed: self.translation_loop.start() from __init__
         self.translate_ctx = discord.app_commands.ContextMenu(
             name="Translate Message",
             callback=self.translate_from_message,
         )
-        self._tr: GoogleTranslator
+        self._tr: Optional[GoogleTranslator] = None
+        
+    # Add the listener function here
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
+        """Detects flag emoji reactions and translates the message."""
+        if user.bot or not reaction.message.guild:
+            return  # Ignore bots and DMs
+
+        # Ensure that reaction translation is enabled for this guild
+        guild_settings = await self.config.guild(reaction.message.guild).all()
+        if not guild_settings["reaction"]:
+            return  # Reaction translation is disabled
+
+        # Extract the target language using the class-level emoji_to_lang
+        emoji = str(reaction.emoji)
+        target_lang = self.emoji_to_lang.get(emoji)
+
+        if not target_lang:
+            return  # No supported flag emoji detected
+
+        # Get the message that was reacted to
+        message = reaction.message
+        detected_lang = await self._tr.detect_language(message.content)
+
+        if detected_lang == target_lang:
+            return  # Skip translation if the same language
+
+        # Use string representation of the detected language for cache key
+        detected_lang_str = str(detected_lang)
+
+        # Perform the translation
+        try:
+            translated_text = await self._tr.translate_text(target_lang, message.content, detected_lang_str)
+        except GoogleTranslateAPIError as e:
+            await message.channel.send(f"Error translating: {str(e)}")
+            return
+
+        if translated_text:
+            await message.channel.send(f"**Translated to {target_lang}:** {translated_text}") 
+        
+        # Ensure the reaction is being handled for all future reactions too
+        if reaction.message.guild.id not in self.cache["guild_reactions"]:
+            self.cache["guild_reactions"].append(reaction.message.guild.id)    
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         """
@@ -107,6 +164,8 @@ class Translate(GoogleTranslateAPI, commands.Cog):
             central_key, session=None, stats_counter=StatsCounter(self.config)
         )
         await self._tr.stats_counter.initialize()
+        # Start the translation loop after _tr is initialized
+        self.translation_loop.start()
 
     async def cog_unload(self):
         self.bot.tree.remove_command(self.translate_ctx.name, type=self.translate_ctx.type)
